@@ -24,8 +24,9 @@ from zeroros.rate import Rate
 # IMR_RF2_T3_IMPORTS: Add the forward-clearance and braking imports here
 #----------------------------------------------------------------
 # IMR_P2_T3_IMPORTS: Add the motion-model imports here
-from model_uos_imr import ActuatorConfiguration, rigid_body_kinematics
+from model_uos_imr import ActuatorConfiguration
 from math_uos_imr import Vector
+from model_uos_imr import rigid_body_kinematics
 # IMR_P2_T4_IMPORTS: Add the LiDAR observation-model and Vector imports here
 from model_uos_imr import RangeAngleKinematics
 #----------------------------------------------------------------
@@ -50,7 +51,7 @@ class LaptopPilot:
         #----------------------------------------------------------------
         aruco_params = {
             "port": 50001,  # Port to listen Arena1: 50001; Arena2: 50002 (CHANGE THIS to match the Arena you are testing in)
-            "marker_id": 23,  # Marker ID to listen to (CHANGE THIS to your marker ID)            
+            "marker_id": 20,  # Marker ID to listen to (CHANGE THIS to your marker ID)            
         }
         self.robot_ip = "192.168.90.1" # Don't change this        
 
@@ -61,7 +62,8 @@ class LaptopPilot:
         self.sim_time_offset = 0 #used to deal with webots timestamps
         self.sim_init = False #used to deal with webots timestamps
         self.simulation = simulation
-
+        self.start_time = None
+        self.path = None
         if self.simulation:
             aruco_params = {
                 "port": 50000,  # Port to listen to (DO NOT CHANGE)
@@ -91,10 +93,9 @@ class LaptopPilot:
         # lists and specify whether they are relative to the initial position
         #----------------------------------------------------------------
         # path
-        self.northings_path = [0, 1, 1, 2, 2]
-        self.eastings_path = [0, 0, 1, 1, 0]
-        self.relative_path = True
-
+        self.northings_path = [0, 1, 1, 2, 2] # create a list of waypoints
+        self.eastings_path = [0, 0, 1, 1, 0] # create a list of waypoints
+        self.relative_path = True # False if you want it to be absolute
         #-------------- Guided-practicals -------------------------------
         # IMR_RF2_T1_ACTUATORS: Set actuation configuration parameters
         # IMR_RF2_T1_MOTION_INIT: Add the pose-initialisation flag here
@@ -102,33 +103,28 @@ class LaptopPilot:
         # IMR_RF2_T3_SET_TWIST: Set twist parameters
         #----------------------------------------------------------------
         # IMR_P2_T3_INITIALISATION: Add the pose-initialisation flag here
+        self.initialise_pose = True # False once the pose is initialised 
         # IMR_P2_T3_ACTUATOR_MODEL: Define the wheel geometry and create
-        self.initialise_pose = True
-
-        wheel_distance = 0.081
-        wheel_diameter = 0.074
-
-        self.ddrive = ActuatorConfiguration(
-            wheel_distance,
-            wheel_diameter
-        )
         # the differential-drive actuator model here.
+        # modelling parameters
+        wheel_distance = 0.081 # measure this 
+        wheel_diameter = 0.074 # measure this
+        self.ddrive = ActuatorConfiguration(wheel_distance, wheel_diameter) #look at your tutorial and see how to use this
         #----------------------------------------------------------------
         # IMR_P3_T1_TRAJECTORY_PARAMETERS: Define the velocity,
         # acceleration, waypoint acceptance radius and turning radius here.
-        self.v_traj = 0.1
-        self.a_traj = 0.1
-        self.wp_accept_radius = 0.1
-        self.turning_radius = 0.2
+        self.v = 0.1
+        self.a = 0.1/3
+        self.accept_radius = 0.2
+        self.arc_radius = 0.3
         # IMR_P3_T2_CONTROL_PARAMETERS: Define the controller response
         # parameters, motion limits and control-initialisation flag here.
-        self.tau_s = 1.0
-        self.L = 0.3
-
-        self.v_max = 0.2
-        self.w_max = np.deg2rad(30)
-
-        self.initialise_control = True
+        # control parameters        
+        self.tau_s = 1 # s to remove along track error
+        self.L = 0.5 # m distance to remove normal and angular error
+        self.v_max = 0.2 # fastest the robot can go
+        self.w_max = np.deg2rad(30) # fastest the robot can turn
+        self.initialise_control = True # False once control gains is initialised 
         # IMR_P3_T3_PARAMETERS: Change the trajectory and control
         # parameters above when investigating parameter sensitivity.
         #----------------------------------------------------------------
@@ -167,13 +163,10 @@ class LaptopPilot:
         #----------------------------------------------------------------
         # IMR_P2_T4_LIDAR_MODEL: Define the LiDAR position and create the
         # range-angle observation model here
-        lidar_xb = 0
-        lidar_yb = 0
-
-        self.lidar = RangeAngleKinematics(
-            lidar_xb,
-            lidar_yb,
-        )
+        # lidar       
+        lidar_xb = 0.04 # location of lidar centre in b-frame primary axis
+        lidar_yb = 0 # location of lidar centre in b-frame secondary axis
+        self.lidar = RangeAngleKinematics(lidar_xb,lidar_yb, distance_range = [0.05, 1], scan_fov = np.deg2rad(120), n_beams = 20)
         #----------------------------------------------------------------
         
         ###############################################################
@@ -249,12 +242,11 @@ class LaptopPilot:
         #-------------- Guided-practicals -------------------------------
         # IMR_RF2_T1_WHEEL_RATES: Store the measured right and left wheel
         # rates in the corresponding LaptopPilot attributes here
-        # task2.2
-        self.measured_wheelrate_right = msg.vector.x
-        self.measured_wheelrate_left = msg.vector.y
         #----------------------------------------------------------------
         # IMR_P2_T2_WHEEL_RATES: Store the measured right and left wheel
         # rates in the corresponding LaptopPilot attributes here
+        self.measured_wheelrate_right = msg.vector.x
+        self.measured_wheelrate_left = msg.vector.y
         #----------------------------------------------------------------
         
         self.datalog.log(msg, topic_name="/true_wheel_speeds")
@@ -272,33 +264,36 @@ class LaptopPilot:
         # IMR_RF2_T1_LIDAR_INTERPRET: Store and transform LiDAR measurements
         #----------------------------------------------------------------
         # IMR_P2_T2_LIDAR_DISPLAY: Store the LiDAR timestamp and raw
-        # range-angle observations in the attributes used by show_laptop.py  
-        self.lidar_timestamp_s = msg.header.stamp
-
-        # robot pose in e-frame
-        # lidar_data 应该放的是相对于环境的坐标，要通过 range_angle_to_loc 进行修改，
-        # 所以要先知道机器人的位置 和 landmark 的极坐标
+        # range-angle observations in the attributes used by show_laptop.py 
+        self.lidar_timestamp_s = msg.header.stamp #we want the lidar measurement timestamp here
+        
+        self.lidar_data = np.zeros((len(msg.ranges), 2)) #specify length of the lidar data
+        self.lidar_data[:,0] = msg.ranges # use ranges as a placeholder, workout northings in Task 4
+        self.lidar_data[:,1] = msg.angles # use angles as a placeholder, workout eastings in Task 4  
+        # IMR_P2_T4_LIDAR_TRANSFORM: Replace the raw display data with
+        # LiDAR observations transformed into the Earth frame here.
+         # b to e frame
         p_eb = Vector(3)
-        p_eb[0] = self.est_pose_northings_m
-        p_eb[1] = self.est_pose_eastings_m
-        p_eb[2] = self.est_pose_yaw_rad
+        p_eb[0] = self.est_pose_northings_m #robot pose northings (see Task 3)
+        p_eb[1] = self.est_pose_eastings_m #robot pose eastings (see Task 3)
+        p_eb[2] = self.est_pose_yaw_rad #robot pose yaw (see Task 3)
 
-        # transformed LiDAR points in e-frame
-        self.lidar_data = np.zeros((len(msg.ranges), 2))
-        z_lm = Vector(2)
-
+        # m to e frame
+        self.lidar_data = np.zeros((len(msg.ranges), 2))        
+                    
+        z_lm = Vector(2)        
+        # for each map measurement
         for i in range(len(msg.ranges)):
             z_lm[0] = msg.ranges[i]
             z_lm[1] = msg.angles[i]
+                
+            t_em = self.lidar.rangeangle_to_loc(p_eb, z_lm) # see tutotial
 
-            t_em = self.lidar.rangeangle_to_loc(p_eb, z_lm)
+            self.lidar_data[i,0] = t_em[0]
+            self.lidar_data[i,1] = t_em[1]
 
-            self.lidar_data[i, 0] = t_em[0]
-            self.lidar_data[i, 1] = t_em[1]
-
+        # this filters out any 
         self.lidar_data = self.lidar_data[~np.isnan(self.lidar_data).any(axis=1)]
-        # IMR_P2_T4_LIDAR_TRANSFORM: Replace the raw display data with
-        # LiDAR observations transformed into the Earth frame here.
         #----------------------------------------------------------------
         # IMR_P7_T1_LIDAR_PROCESSING: Store the timestamp, transform valid
         # LiDAR observations for display, retain the range-bearing scan and
@@ -380,30 +375,22 @@ class LaptopPilot:
     #   1. offset relative waypoints by the initial robot position;
     #   2. create a trajectory from the waypoint lists; and
     #   3. apply the chosen trajectory parameters.
+    #----------------------------------------------------------------    
     def generate_trajectory(self):
-        # 如果是相对路径
+        # pick waypoints as current pose relative or absolute northings and eastings
         if self.relative_path == True:
             for i in range(len(self.northings_path)):
-                self.northings_path[i] += self.est_pose_northings_m
-                self.eastings_path[i] += self.est_pose_eastings_m
-        C = l2m([
-            self.northings_path,
-            self.eastings_path
-        ])
-        self.path = TrajectoryGenerate(
-            C[:, 0],
-            C[:, 1]
-        )
-        self.path.path_to_trajectory(
-            self.v_traj,
-            self.a_traj
-        )
-        self.path.turning_arcs(
-            self.turning_radius
-        )
-        self.path.wp_id = 0
-    #----------------------------------------------------------------    
+                self.northings_path[i] += self.est_pose_northings_m #offset by current northings
+                self.eastings_path[i] += self.est_pose_eastings_m #offset by current eastings
 
+            # convert path to matrix and create a trajectory class instance
+            C = l2m([self.northings_path, self.eastings_path])        
+            self.path = TrajectoryGenerate(C[:, 0], C[:, 1])        
+            
+            # set trajectory variables (velocity, acceleration and turning arc radius)
+            self.path.path_to_trajectory(self.v, self.a) #velocity and acceleration
+            self.path.turning_arcs(self.arc_radius) #turning radius
+            self.path.wp_id=0 #initialises the next waypoint
 
     def run(self, time_to_run=-1):
         self.start_time = datetime.utcnow().timestamp()
@@ -454,25 +441,28 @@ class LaptopPilot:
             #-------------- Guided-practicals -------------------------------
             # IMR_RF2_T1_INITIAL_POSE: On the first ArUco measurement, initialise
             # the estimated pose and motion-model timing here
-            if self.initialise_pose == True:
-                self.est_pose_northings_m = self.measured_pose_northings_m
-                self.est_pose_eastings_m = self.measured_pose_eastings_m
-                self.est_pose_yaw_rad = self.measured_pose_yaw_rad
-
-                self.t_prev = datetime.utcnow().timestamp()
-                self.t = 0
-                
-                self.generate_trajectory()
-
-                time.sleep(0.1)
-
-                self.initialise_pose = False
             #----------------------------------------------------------------
             # IMR_P2_T3_INITIAL_POSE: On the first ArUco measurement, initialise
             # the estimated pose and motion-model timing here
+            if self.initialise_pose == True:
+                self.est_pose_northings_m = self.measured_pose_northings_m # use the aruco measured pose
+                self.est_pose_eastings_m = self.measured_pose_eastings_m
+                self.est_pose_yaw_rad = self.measured_pose_yaw_rad
+                
+
+            # get current time and determine timestep
+                self.t_prev = datetime.utcnow().timestamp() #initialise the time
+                self.t = 0 #elapsed time
+                time.sleep(0.1) #wait for approx a timestep before proceeding
+                    
+                    # path and tragectory are initialised
+                self.initialise_pose = False 
+
             #----------------------------------------------------------------
             # IMR_P3_T1_INITIALISE_TRAJECTORY: Inside the pose-initialisation
-            # conditional, generate the trajectory after setting the initial pose            
+            # conditional, generate the trajectory after setting the initial pose    
+                self.generate_trajectory()
+                print('check for  ini pose True')        
             #----------------------------------------------------------------
 
         ###############################################################
@@ -499,56 +489,48 @@ class LaptopPilot:
         #---------------------------------------------------------------- 
         # IMR_P2_T2_ESTIMATED_POSE: Change the estimated-pose attributes
         # below to verify that they are displayed and logged correctly.
-
-        # task 2.3
-        # self.est_pose_northings_m = 1 # modify value
-        # self.est_pose_eastings_m = 2 # modify value
-        # self.est_pose_yaw_rad = np.deg2rad(45) # modify value
+        #self.est_pose_northings_m = self.measured_pose_northings_m # modify value
+        #self.est_pose_eastings_m = self.measured_pose_eastings_m # modify value
+        #self.est_pose_yaw_rad = self.measured_pose_yaw_rad # modify value
         #---------------------------------------------------------------- 
         # IMR_P2_T3_MOTION_MODEL: Once the pose is initialised, convert the
         # measured wheel rates to robot twist, calculate the timestep and
         # propagate the previous pose estimate here. Keep the estimate logging
         # and subsequent Act section inside the initialisation conditional.
-        if self.initialise_pose != True:
-            q = Vector(2)
-
-            if self.measured_wheelrate_right is not None:
-                q[0] = self.measured_wheelrate_right
-
-            if self.measured_wheelrate_left is not None:
-                q[1] = self.measured_wheelrate_left
-
+        if self.initialise_pose != True:  
+            print('check for  ini pose False') 
+            q = Vector(2)            
+            if self.measured_wheelrate_right is not None: q[0] = self.measured_wheelrate_right # wheel rate rad/s (measured)
+            if self.measured_wheelrate_left is not None: q[1] = self.measured_wheelrate_left # wheel rate rad/s (measured)
             u = self.ddrive.fwd_kinematics(q)
-            t_now = datetime.utcnow().timestamp()
+            print('twist',u)            
+        
+            #determine the time step
+            t_now = datetime.utcnow().timestamp()        
+                
+            dt = t_now - self.t_prev #timestep from last estimate
+            self.t += dt #add to the elapsed time
+            self.t_prev = t_now #update the previous timestep for the next loop
 
-            # 计算 timestamp
-            dt = t_now - self.t_prev
-            self.t += dt
-            self.t_prev = t_now
+            # take current pose estimate and update by twist
             p_robot = Vector(3)
-
             p_robot[0] = self.est_pose_northings_m
             p_robot[1] = self.est_pose_eastings_m
             p_robot[2] = self.est_pose_yaw_rad
+                                
+            p_robot = rigid_body_kinematics(p_robot, u, dt)
+            p_robot[2] = p_robot[2] % (2 * np.pi)  # deal with angle wrapping          
 
-            p_robot = rigid_body_kinematics(
-                p_robot,
-                u,
-                dt
-            )
-
-            p_robot[2] = p_robot[2, 0] % (2 * np.pi)
-
-            self.est_pose_northings_m = p_robot[0, 0]
-            self.est_pose_eastings_m = p_robot[1, 0]
-            self.est_pose_yaw_rad = p_robot[2, 0]
+            # update for show_laptop.py            
+            self.est_pose_northings_m = self.measured_pose_northings_m
+            self.est_pose_eastings_m = self.measured_pose_eastings_m
+            self.est_pose_yaw_rad = self.measured_pose_yaw_rad
+        ################### Motion Model ##############################
+        # convert true wheel speeds in to twist
+        
         #----------------------------------------------------------------
 
-            msg = self.pose_parse([datetime.utcnow().timestamp(),
-                               self.est_pose_northings_m,
-                               self.est_pose_eastings_m,
-                               0,0,0,
-                               self.est_pose_yaw_rad])
+            msg = self.pose_parse([datetime.utcnow().timestamp(),self.est_pose_northings_m,self.est_pose_eastings_m,0,0,0,self.est_pose_yaw_rad])
             self.datalog.log(msg, topic_name="/est_pose")
 
         #-------------- Guided-practicals -------------------------------
@@ -563,99 +545,100 @@ class LaptopPilot:
         #-------------- Guided-practicals -------------------------------
         # IMR_P3_T1_SAMPLE_TRAJECTORY: Update waypoint progress and sample
         # the reference pose and feedforward twist at the current elapsed time
-            self.path.wp_progress(
-                self.t,
-                p_robot,
-                self.wp_accept_radius
-            )
+        #################### Trajectory sample #################################    
 
+        # feedforward control: check wp progress and sample reference trajectory
+        #print("path ",self.path)
+        #self.path.wp_progress(self.t, p_robot, self.arc_radius) # fill turning radius
+        #p_ref, u_ref = self.path.p_u_sample(self.t) #sample the path at the current elapsetime (i.e., seconds from start of motion modelling)
+
+        if self.path is not None:
+            self.path.wp_progress(self.t, p_robot, self.arc_radius)
             p_ref, u_ref = self.path.p_u_sample(self.t)
-            # p3 task2 controller
-            self.est_pose_northings_m = p_ref[0, 0]
-            self.est_pose_eastings_m = p_ref[1, 0]
-            self.est_pose_yaw_rad = p_ref[2, 0]
+            print("p-ref[0]",p_ref[0])
+            #print('pos', self.est_pose_northings_m)
+            #self.est_pose_northings_m = p_ref[0][0]
+            #self.est_pose_eastings_m = p_ref[1][0]
+            #self.est_pose_yaw_rad = p_ref[2,0]
+
+
         # IMR_P3_T2_POSE_ERROR: Calculate the difference between the
         # reference and estimated poses, wrap the yaw error and express the
         # pose error in the robot body frame.
-            dp = p_ref - p_robot
-            # 将 yaw rad 设置在 [-π, π) 之间
-            dp[2] = (dp[2] + np.pi) % (2 * np.pi) - np.pi
+        #<sample path at current elapse time>
 
-            # rotate e-frame error into robot body frame
-            H_eb = HomogeneousTransformation(
-                p_robot[0:2], p_robot[2]
-            )
-            ds = Inverse(H_eb.H) @ dp
-        # IMR_P3_T2_FEEDBACK_CONTROL: Initialise or update the control
-        # gains, calculate the feedback correction and combine it with the
-        # feedforward twist.
-
-            # compute control gains
-            self.k_s = 1 / self.tau_s
+        # feedback control: get pose change to desired trajectory from body
+            dp = p_ref - p_robot #compute difference between reference and estimated pose in the $e$-frame
+            dp[2] = (dp[2] + np.pi) % (2 * np.pi) - np.pi # handle angle wrapping for yaw
+            H_eb = HomogeneousTransformation(p_robot[0:2], p_robot[2])
+            ds =  Inverse(H_eb.H_R)@dp # rotate the $e$-frame difference to get it in the $b$-frame (Hint: dp_b = H_be.H_R @ dp_e)
+            # IMR_P3_T2_FEEDBACK_CONTROL: Initialise or update the control
+            # gains, calculate the feedback correction and combine it with the
+            # feedforward twist.
+            
+            # compute control gains for the initial condition (where the robot is stationalry)
+            self.k_s = 1/self.tau_s #ks
             if self.initialise_control == True:
-                self.k_n = 2 * u_ref[0] / (self.L ** 2)
-                self.k_g = u_ref[0] / self.L
-
-                self.initialise_control = False
-
-            # feedback correction
+                self.k_n = (2*u_ref[0])/(self.L**2) #kn
+                self.k_g = u_ref[0]/self.L #kg
+                self.initialise_control = False # maths changes a bit after the first iteration
+            # update the controls
             du = feedback_control(ds, self.k_s, self.k_n, self.k_g)
-            # feedforward + feedback
-            u = u_ref + du
 
-            # update gains for next iteration
-            self.k_n = 2 * u[0] / (self.L ** 2)
-            self.k_g = u[0] / self.L
-        #----------------------------------------------------------------
+            # total control
+            u = u_ref + du # combine feedback and feedforward control twist components
 
-        #-------------- Guided-practicals -------------------------------
-        # IMR_RF2_T1_WHEEL_COMMANDS: Change the right and left wheel rates
-        # here to produce twist, linear and rotational motion.
-        # IMR_RF2_T2_FREESPACE_STEER: Steer towards freespace direction
-        # IMR_RF2_T2_TWIST_CMD: Convert modified twist to wheel rates
-        # IMR_RF2_T3_BRAKING: Brake when obstacles approach
-        # IMR_RF2_T3_TWIST_CMD: Convert modified twist to wheel rates
-        # IMR_RF2_T4_ESCAPE: Check if trapped and escape
-        #----------------------------------------------------------------
-        # IMR_P3_T2_ACTUATOR_COMMANDS: Limit the commanded linear and
-        # angular velocities, convert the resulting twist to wheel rates
-        # and store the right and left wheel commands below
-        # ensure within performance limitation
-            if u[0] > self.v_max:
-                u[0] = self.v_max
+            # update control gains for the next timestep
+            self.k_n = (2*u[0])/(self.L**2) #kn
+            self.k_g = u[0]/self.L #kg
+            #----------------------------------------------------------------
 
-            if u[0] < -self.v_max:
-                u[0] = -self.v_max
+            #-------------- Guided-practicals -------------------------------
+            # IMR_RF2_T1_WHEEL_COMMANDS: Change the right and left wheel rates
+            # here to produce twist, linear and rotational motion.
+            # IMR_RF2_T2_FREESPACE_STEER: Steer towards freespace direction
+            # IMR_RF2_T2_TWIST_CMD: Convert modified twist to wheel rates
+            # IMR_RF2_T3_BRAKING: Brake when obstacles approach
+            # IMR_RF2_T3_TWIST_CMD: Convert modified twist to wheel rates
+            # IMR_RF2_T4_ESCAPE: Check if trapped and escape
+            #----------------------------------------------------------------
+            # IMR_P3_T2_ACTUATOR_COMMANDS: Limit the commanded linear and
+            # angular velocities, convert the resulting twist to wheel rates
+            # and store the right and left wheel commands below
+            # ensure within performance limitation
+            if u[0] > self.v_max: u[0] = self.v_max
+            if u[0] < -self.v_max: u[0] = -self.v_max
+            if u[1] > self.w_max: u[1] = self.w_max
+            if u[1] < -self.w_max: u[1] = -self.w_max
 
-            if u[1] > self.w_max:
-                u[1] = self.w_max
+            # actuator commands                 
+            q = self.ddrive.inv_kinematics(u)            
 
-            if u[1] < -self.w_max:
-                u[1] = -self.w_max
-            q = self.ddrive.inv_kinematics(u)
+            wheel_speed_msg = Vector3Stamped()
+            wheel_speed_msg.vector.x = q[0,0] # Right wheelspeed rad/s
+            wheel_speed_msg.vector.y = q[1,0] # Left wheelspeed rad/s
         #----------------------------------------------------------------
         # IMR_P2_T1_WHEEL_COMMANDS: Change the right and left wheel rates
         # here to produce twist, linear and rotational motion.
-
         #----------------------------------------------------------------              
         # IMR_P7_T1_STATIONARY: Set both wheel-rate commands to zero for
         # the stationary cognition experiments.  
         #----------------------------------------------------------------      
 
-            wheel_speed_msg = Vector3Stamped()
-            # wheel_speed_msg.vector.x = 2 * np.pi  # Right wheel 0.5 rev/s = 1*pi rad/s
-            # wheel_speed_msg.vector.y = 1 * np.pi  # Left wheel 1 rev/s = 2*pi rad/s
-            wheel_speed_msg.vector.x = q[0, 0]   # Right wheel
-            wheel_speed_msg.vector.y = q[1, 0]   # Left wheel
+        wheel_speed_msg = Vector3Stamped()
+        #wheel_speed_msg.vector.x = 1 * np.pi  # Right wheel 0.5 rev/s = 1*pi rad/s
+        #wheel_speed_msg.vector.y = 2 * np.pi  # Left wheel 1 rev/s = 2*pi rad/s
 
-            self.cmd_wheelrate_right = wheel_speed_msg.vector.x
-            self.cmd_wheelrate_left = wheel_speed_msg.vector.y
+
+        self.cmd_wheelrate_right = wheel_speed_msg.vector.x
+        self.cmd_wheelrate_left = wheel_speed_msg.vector.y
+
         ################################################################################
         # > Act < #
         ################################################################################        
         # Send commands to the robot        
-            if self.stop_flag == False: self.wheel_speed_pub.publish(wheel_speed_msg)
-            self.datalog.log(wheel_speed_msg, topic_name="/wheel_speeds_cmd")
+        if self.stop_flag == False: self.wheel_speed_pub.publish(wheel_speed_msg)
+        self.datalog.log(wheel_speed_msg, topic_name="/wheel_speeds_cmd")
 
 
 
