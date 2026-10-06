@@ -93,8 +93,8 @@ class LaptopPilot:
         # path
         self.northings_path = [0, 1, 1, 2, 2]
         self.eastings_path = [0, 0, 1, 1, 0]
-        self.relative_path = True
 
+        self.relative_path = True
         #-------------- Guided-practicals -------------------------------
         # IMR_RF2_T1_ACTUATORS: Set actuation configuration parameters
         # IMR_RF2_T1_MOTION_INIT: Add the pose-initialisation flag here
@@ -129,6 +129,10 @@ class LaptopPilot:
         self.w_max = np.deg2rad(30)
 
         self.initialise_control = True
+
+        # 查看相机是否真的检测到了机器人的位置
+        self.new_camera_measurement = False
+
         # IMR_P3_T3_PARAMETERS: Change the trajectory and control
         # parameters above when investigating parameter sensitivity.
         #----------------------------------------------------------------
@@ -173,6 +177,9 @@ class LaptopPilot:
         self.lidar = RangeAngleKinematics(
             lidar_xb,
             lidar_yb,
+            distance_range = [0.05, 1], 
+            scan_fov = np.deg2rad(120), 
+            n_beams = 30
         )
         #----------------------------------------------------------------
         
@@ -436,7 +443,10 @@ class LaptopPilot:
         # get the latest position measurements
         aruco_pose = self.aruco_driver.read()    
 
-        if aruco_pose is not None:             
+        if aruco_pose is not None:    
+            # new camera measurement arrived
+            self.new_camera_measurement = True    
+
             # converts aruco date to zeroros PoseStamped format                         
             msg = self.pose_parse(aruco_pose, aruco = True)
             self.broadcast = msg.header.stamp 
@@ -539,11 +549,20 @@ class LaptopPilot:
 
             p_robot[2] = p_robot[2, 0] % (2 * np.pi)
 
+            # ==============================
+            # Camera correction
+            # ==============================
+            if self.new_camera_measurement:
+                p_robot[0, 0] = self.measured_pose_northings_m
+                p_robot[1, 0] = self.measured_pose_eastings_m
+                p_robot[2, 0] = self.measured_pose_yaw_rad
+                # has been used
+                self.new_camera_measurement = False
+
             self.est_pose_northings_m = p_robot[0, 0]
             self.est_pose_eastings_m = p_robot[1, 0]
             self.est_pose_yaw_rad = p_robot[2, 0]
         #----------------------------------------------------------------
-
             msg = self.pose_parse([datetime.utcnow().timestamp(),
                                self.est_pose_northings_m,
                                self.est_pose_eastings_m,
@@ -571,9 +590,9 @@ class LaptopPilot:
 
             p_ref, u_ref = self.path.p_u_sample(self.t)
             # p3 task2 controller
-            self.est_pose_northings_m = p_ref[0, 0]
-            self.est_pose_eastings_m = p_ref[1, 0]
-            self.est_pose_yaw_rad = p_ref[2, 0]
+            # self.est_pose_northings_m = p_ref[0, 0]
+            # self.est_pose_eastings_m = p_ref[1, 0]
+            # self.est_pose_yaw_rad = p_ref[2, 0]
         # IMR_P3_T2_POSE_ERROR: Calculate the difference between the
         # reference and estimated poses, wrap the yaw error and express the
         # pose error in the robot body frame.
@@ -585,7 +604,7 @@ class LaptopPilot:
             H_eb = HomogeneousTransformation(
                 p_robot[0:2], p_robot[2]
             )
-            ds = Inverse(H_eb.H) @ dp
+            ds = Inverse(H_eb.H_R) @ dp
         # IMR_P3_T2_FEEDBACK_CONTROL: Initialise or update the control
         # gains, calculate the feedback correction and combine it with the
         # feedforward twist.
