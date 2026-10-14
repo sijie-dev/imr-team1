@@ -91,7 +91,7 @@ class LaptopPilot:
         # lists and specify whether they are relative to the initial position
         #----------------------------------------------------------------
         # path
-        self.northings_path = [0, 1, 1, 2, 2]
+        self.northings_path = [0, 0.5, 0.5, 1.5, 1.5]
         self.eastings_path = [0, 0, 1, 1, 0]
 
         self.relative_path = True
@@ -118,12 +118,31 @@ class LaptopPilot:
         # acceleration, waypoint acceptance radius and turning radius here.
         self.v_traj = 0.1
         self.a_traj = 0.1
-        self.wp_accept_radius = 0.1
-        self.turning_radius = 0.2
+        self.wp_accept_radius = 0.2
+        self.turning_radius = 0.3
         # IMR_P3_T2_CONTROL_PARAMETERS: Define the controller response
         # parameters, motion limits and control-initialisation flag here.
+
+        # first test
+        # self.tau_s = 1.0
+        # self.L = 0.5
+
+        # # second test
+        # self.tau_s = 0.5
+        # self.L = 0.5
+
+        # # third test
+        # self.tau_s = 0.5
+        # self.L = 1
+
+        # # fourth test
+        # self.tau_s = 1.0
+        # self.L = 1.0
+
+
+        # # # fifth test
         self.tau_s = 1.0
-        self.L = 0.3
+        self.L = 0.25
 
         self.v_max = 0.2
         self.w_max = np.deg2rad(30)
@@ -600,11 +619,15 @@ class LaptopPilot:
             # 将 yaw rad 设置在 [-π, π) 之间
             dp[2] = (dp[2] + np.pi) % (2 * np.pi) - np.pi
 
+            # dp_xy = dp[0:2]
             # rotate e-frame error into robot body frame
             H_eb = HomogeneousTransformation(
                 p_robot[0:2], p_robot[2]
             )
+            # ds = Vector(3)  
+            # ds[0:2] = Inverse(H_eb.H_R) @ dp_xy
             ds = Inverse(H_eb.H_R) @ dp
+            # ds[2] = dp[2]
         # IMR_P3_T2_FEEDBACK_CONTROL: Initialise or update the control
         # gains, calculate the feedback correction and combine it with the
         # feedforward twist.
